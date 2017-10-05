@@ -20,7 +20,7 @@ public class SerialIngester extends PApplet {
 		for(String s: Serial.list()) {
 			System.out.println(s);
 		}
-		myPort = new Serial(this, "com6", 9600);
+		myPort = new Serial(this, "com3", 9600);
 		myPort.clear();
 		// Throw out the first reading, in case we started reading
 		// in the middle of a string from the sender.
