@@ -9,9 +9,9 @@ class VideoSLAM:
         if not self.cap.isOpened():
             raise IOError(f"Cannot open video: {video_path}")
         self.orb = cv2.ORB_create(2000)
-        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        self.prev_kp = None
-        self.prev_desc = None
+        self.prev_pts = None
+        self.prev_gray = None
+        self.feature_thresh = 100
         self.cur_pose = np.eye(3)
         self.trajectory = [(0.0, 0.0)]
 
@@ -20,35 +20,41 @@ class VideoSLAM:
         if not ret:
             raise ValueError("Unable to read first frame from video")
         gray_prev = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self.prev_kp, self.prev_desc = self.orb.detectAndCompute(gray_prev, None)
+        kp = self.orb.detect(gray_prev, None)
+        self.prev_pts = np.array([k.pt for k in kp], dtype=np.float32).reshape(-1, 1, 2)
+        self.prev_gray = gray_prev
 
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            kp, desc = self.orb.detectAndCompute(gray, None)
-            if desc is None or self.prev_desc is None:
-                self.prev_kp, self.prev_desc = kp, desc
-                continue
 
-            matches = self.bf.match(desc, self.prev_desc)
-            matches = sorted(matches, key=lambda x: x.distance)[:150]
-            if len(matches) < 6:
-                self.prev_kp, self.prev_desc = kp, desc
-                continue
+            if self.prev_pts is not None and len(self.prev_pts) > 0:
+                next_pts, status, _ = cv2.calcOpticalFlowPyrLK(self.prev_gray, gray, self.prev_pts, None)
+                status = status.reshape(-1)
+                good_prev = self.prev_pts[status == 1].reshape(-1, 2)
+                good_next = next_pts[status == 1].reshape(-1, 2)
+                matches = list(zip(good_next, good_prev))
+                if len(matches) >= 6:
+                    src = np.float32([m[0] for m in matches])
+                    dst = np.float32([m[1] for m in matches])
+                    affine, inliers = cv2.estimateAffinePartial2D(src, dst)
+                    if affine is not None:
+                        transform = np.eye(3)
+                        transform[:2, :] = affine
+                        self.cur_pose = self.cur_pose @ np.linalg.inv(transform)
+                        x, y = self.cur_pose[0, 2], self.cur_pose[1, 2]
+                        self.trajectory.append((x, y))
+                self.prev_pts = good_next.reshape(-1, 1, 2)
+            else:
+                self.prev_pts = np.empty((0, 1, 2), dtype=np.float32)
 
-            src = np.float32([kp[m.queryIdx].pt for m in matches])
-            dst = np.float32([self.prev_kp[m.trainIdx].pt for m in matches])
-            affine, inliers = cv2.estimateAffinePartial2D(src, dst)
-            if affine is not None:
-                transform = np.eye(3)
-                transform[:2, :] = affine
-                self.cur_pose = self.cur_pose @ np.linalg.inv(transform)
-                x, y = self.cur_pose[0, 2], self.cur_pose[1, 2]
-                self.trajectory.append((x, y))
+            if self.prev_pts.shape[0] < self.feature_thresh:
+                kp = self.orb.detect(gray, None)
+                self.prev_pts = np.array([k.pt for k in kp], dtype=np.float32).reshape(-1, 1, 2)
 
-            self.prev_kp, self.prev_desc = kp, desc
+            self.prev_gray = gray
 
         self.cap.release()
         return self.trajectory
